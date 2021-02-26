@@ -1,9 +1,10 @@
 from tensorflow import keras
+import tensorflow as tf
 import logging
 from .utils import ensure_tf_type, ensure_numpy_type
 
 
-def convert_conv(node, params, layers, lambda_func, node_name, keras_name):
+def convert_conv(node, params, layers, lambda_func, node_name, keras_name, node_index):
     """
     Convert convolution layer
     :param node: current operation node
@@ -14,7 +15,7 @@ def convert_conv(node, params, layers, lambda_func, node_name, keras_name):
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.conv')
+    logger = logging.getLogger('onnx2keras:conv')
 
     if len(node.input) == 3:
         logger.debug('Conv with bias')
@@ -79,6 +80,7 @@ def convert_conv(node, params, layers, lambda_func, node_name, keras_name):
             padding = (pads[0], pads[1])
         elif len(pads) == 4 and (pads[0] > 0 or pads[1] > 0 or pads[2] > 0 or pads[3] > 0):
             padding = ((pads[0], pads[2]), (pads[1], pads[3]))
+        print(padding)
 
         if padding:
             logger.debug('Paddings exist, add ZeroPadding layer')
@@ -91,10 +93,13 @@ def convert_conv(node, params, layers, lambda_func, node_name, keras_name):
             layers[padding_name] = input_0 = padding_layer(input_0)
 
         W = W.transpose(2, 3, 1, 0)
+        print(W.shape)
         height, width, channels_per_group, out_channels = W.shape
         in_channels = channels_per_group * n_groups
 
+        print(keras_name)
         if n_groups == in_channels and n_groups != 1:
+            print(n_groups, in_channels)
             logger.debug('Number of groups is equal to input channels, use DepthWise convolution')
             W = W.transpose(0, 1, 3, 2)
             if has_bias:
@@ -117,6 +122,7 @@ def convert_conv(node, params, layers, lambda_func, node_name, keras_name):
             layers[node_name] = conv(input_0)
 
         elif n_groups != 1:
+            print(n_groups)
             logger.debug('Number of groups more than 1, but less than number of in_channel, use group convolution')
 
             # Example from https://kratzert.github.io/2017/02/24/finetuning-alexnet-with-tensorflow.html
@@ -156,25 +162,57 @@ def convert_conv(node, params, layers, lambda_func, node_name, keras_name):
             layers[node_name] = lambda_layer(input_0)
 
         else:
+            print('Normal Convolution')
+            print(n_groups, in_channels)
             if has_bias:
                 weights = [W, bias]
             else:
                 weights = [W]
 
-            conv = keras.layers.Conv2D(
-                filters=out_channels,
-                kernel_size=(height, width),
-                strides=(strides[0], strides[1]),
-                padding='valid',
-                weights=weights,
-                use_bias=has_bias,
-                activation=None,
-                dilation_rate=dilation,
-                bias_initializer='zeros', kernel_initializer='zeros',
-                name=keras_name
-            )
+            if node_index+1:
+
+                '''
+                layer = keras.layers.Lambda(lambda x: tf.transpose(x, [0, 2, 3, 1]), name=node_name+'_lambda')
+                layers[node_name+'_lambda'] = input_0 = layer(input_0)
+
+                conv = keras.layers.Conv2D(
+                    filters=out_channels,
+                    kernel_size=(height, width),
+                    strides=(strides[0], strides[1]),
+                    padding='valid',
+                    weights=weights,
+                    use_bias=has_bias,
+                    activation=None,
+                    dilation_rate=dilation,
+                    bias_initializer='zeros', kernel_initializer='zeros',
+                    name=keras_name
+                )
+                '''
+                #W = W.transpose(2, 3, 1, 0)
+                #W = W.transpose(3, 2, 0, 1)
+                
+                print('new_shape ', W.shape)
+                print('bais shape', bias)
+                conv = keras.layers.Lambda(lambda x: tf.transpose(tf.nn.conv2d(tf.transpose(x, [0, 2, 3, 1]), W, strides=[1, strides[0],  strides[1], 1], padding='VALID', data_format='NHWC'), [0, 3, 1, 2]))
+
+            else:
+                conv = keras.layers.Conv2D(
+                    filters=out_channels,
+                    kernel_size=(height, width),
+                    strides=(strides[0], strides[1]),
+                    padding='valid',
+                    weights=weights,
+                    use_bias=has_bias,
+                    activation=None,
+                    dilation_rate=dilation,
+                    bias_initializer='zeros', kernel_initializer='zeros',
+                    name=keras_name
+                )
+            print('channels_last' if node_index else 'channels_first')
+            print('in : ', input_0)
 
             layers[node_name] = conv(input_0)
+            print('out :', layers[node_name])
     else:
         # 1D conv
         W = W.transpose(2, 1, 0)
@@ -233,7 +271,7 @@ def convert_convtranspose(node, params, layers,
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.convtranpose')
+    logger = logging.getLogger('onnx2keras:convtranpose')
 
     if len(node.input) == 3:
         logger.debug('ConvTranspose with bias')
